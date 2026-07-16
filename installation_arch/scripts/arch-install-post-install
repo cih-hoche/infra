@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+#
+# post-install.sh — Script de post-installation Arch Linux (PCs association)
+#
+# Automatise : yay, Timeshift + grub-btrfs, hook pacman, Plymouth,
+# paquets de base, Wake-on-LAN, snapshot initial.
+#
+# ! Usage : ./post-install.sh
+# ! À lancer avec un utilisateur ayant les droits sudo (PAS en root direct).
+
+set -uo pipefail
+
+# ----------------------------------------------------------------------------
+# Couleurs et helpers de log
+# ----------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+declare -A STATUS   # récapitulatif final : nom_étape -> OK/FAIL/SKIP
+
+log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_ok()      { echo -e "${GREEN}[ OK ]${NC} $*"; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_err()     { echo -e "${RED}[FAIL]${NC} $*"; }
+log_step()    { echo -e "\n${BOLD}==> $*${NC}"; }
+
+record() { STATUS["$1"]="$2"; }
+
+# ----------------------------------------------------------------------------
+# Vérifications préalables
+# ----------------------------------------------------------------------------
+if [[ $EUID -eq 0 ]]; then
+    log_err "Ne pas lancer ce script en root direct. Utilise un compte sudo (ex: admin)."
+    exit 1
+fi
+
+if ! sudo -v; then
+    log_err "Impossible d'obtenir les droits sudo. Abandon."
+    exit 1
+fi
+# Garde le sudo "vivant" pendant toute l'exécution du script
+( while true; do sudo -n true; sleep 60; done ) 2>/dev/null &
+SUDO_KEEPALIVE_PID=$!
+trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT
+
+# ----------------------------------------------------------------------------
+# 1. Mise à jour du système
+# ----------------------------------------------------------------------------
+log_step "Mise à jour du système"
+if sudo pacman -Syu --noconfirm; then
+    log_ok "Système à jour"
+    record "Mise à jour système" "OK"
+else
+    log_err "Échec de la mise à jour"
+    record "Mise à jour système" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 2. Installation de yay (AUR helper)
+# ----------------------------------------------------------------------------
+log_step "Installation de yay"
+if command -v yay &>/dev/null; then
+    log_ok "yay est déjà installé"
+    record "yay" "OK (déjà présent)"
+else
+    if sudo pacman -S --needed --noconfirm git base-devel; then
+        tmpdir=$(mktemp -d)
+        if git clone https://aur.archlinux.org/yay.git "$tmpdir/yay" \
+            && (cd "$tmpdir/yay" && makepkg -si --noconfirm); then
+            log_ok "yay installé"
+            record "yay" "OK"
+        else
+            log_err "Échec de l'installation de yay"
+            record "yay" "FAIL"
+        fi
+        rm -rf "$tmpdir"
+    else
+        log_err "Échec de l'installation de git/base-devel"
+        record "yay" "FAIL"
+    fi
+fi
+
+# ----------------------------------------------------------------------------
+# 3. btrfs-progs, Timeshift, grub-btrfs, inotify-tools
+# ----------------------------------------------------------------------------
+log_step "Installation des outils btrfs / snapshots"
+if sudo pacman -S --needed --noconfirm btrfs-progs timeshift \
+    && yay -S --needed --noconfirm grub-btrfs inotify-tools; then
+    log_ok "btrfs-progs, timeshift, grub-btrfs, inotify-tools installés"
+    record "Outils btrfs/snapshots" "OK"
+else
+    log_err "Échec de l'installation des outils btrfs/snapshots"
+    record "Outils btrfs/snapshots" "FAIL"
+fi
+
+log_info "Activation du service grub-btrfsd"
+if sudo systemctl enable --now grub-btrfsd; then
+    log_ok "grub-btrfsd activé"
+    record "grub-btrfsd" "OK"
+else
+    log_err "Échec de l'activation de grub-btrfsd"
+    record "grub-btrfsd" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 4. Hook pacman : snapshot automatique avant chaque transaction
+# ----------------------------------------------------------------------------
+log_step "Mise en place du hook pacman (snapshot pré-transaction)"
+HOOK_DIR="/etc/pacman.d/hooks"
+HOOK_FILE="$HOOK_DIR/timeshift-snapshot.hook"
+
+sudo mkdir -p "$HOOK_DIR"
+if sudo tee "$HOOK_FILE" > /dev/null << 'EOF'
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Création d'un snapshot Timeshift avant modification des paquets...
+When = PreTransaction
+Exec = /usr/bin/timeshift --create --comments "Avant pacman -Syu" --tags D
+Depends = timeshift
+EOF
+then
+    log_ok "Hook pacman créé : $HOOK_FILE"
+    record "Hook pacman" "OK"
+else
+    log_err "Échec de la création du hook pacman"
+    record "Hook pacman" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 5. Plymouth
+# ----------------------------------------------------------------------------
+log_step "Installation de Plymouth"
+if sudo pacman -S --needed --noconfirm plymouth; then
+    log_ok "Plymouth installé (pense à choisir/activer un thème avec 'plymouth-set-default-theme')"
+    record "Plymouth" "OK (thème à configurer manuellement)"
+else
+    log_err "Échec de l'installation de Plymouth"
+    record "Plymouth" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 6. Paquets de base
+# ----------------------------------------------------------------------------
+log_step "Installation des logiciels de base"
+PACKAGES=(
+    tldr man timeshift git thunderbird blender ghostty dolphin nvim
+    visual-studio-code-bin libreoffice-fresh gwenview vlc okular krita
+    gimp inkscape chromium firefox firefox-ublock-origin krdp remmina
+    qbittorrent kdenlive obs-studio btop
+)
+if yay -S --needed --noconfirm "${PACKAGES[@]}"; then
+    log_ok "Tous les paquets de base sont installés"
+    record "Paquets de base" "OK"
+else
+    log_warn "Certains paquets ont pu échouer, vérifier la sortie ci-dessus"
+    record "Paquets de base" "PARTIEL/FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 7. Wake-on-LAN
+# ----------------------------------------------------------------------------
+log_step "Configuration du Wake-on-LAN"
+sudo pacman -S --needed --noconfirm ethtool wakeonlan >/dev/null 2>&1
+
+# Détection de l'interface ethernet active
+IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^en|^eth' | head -n1)
+
+if [[ -z "$IFACE" ]]; then
+    log_warn "Aucune interface Ethernet détectée automatiquement — WoL non configuré."
+    log_warn "Vérifier manuellement avec 'ip link' et 'nmcli connection show'."
+    record "Wake-on-LAN" "SKIP (pas d'interface détectée)"
+else
+    log_info "Interface Ethernet détectée : $IFACE"
+
+    # Récupère le nom de la connexion NetworkManager associée
+    CONN_NAME=$(nmcli -t -f NAME,DEVICE connection show | awk -F: -v i="$IFACE" '$2==i {print $1; exit}')
+
+    if [[ -z "$CONN_NAME" ]]; then
+        log_warn "Impossible de trouver la connexion NetworkManager pour $IFACE — WoL non configuré."
+        record "Wake-on-LAN" "SKIP (connexion NM introuvable)"
+    else
+        if sudo nmcli connection modify "$CONN_NAME" 802-3-ethernet.wake-on-lan magic; then
+            log_ok "Wake-on-LAN (magic packet) activé sur '$CONN_NAME' ($IFACE)"
+            MAC=$(ip link show "$IFACE" | awk '/ether/ {print $2}')
+            log_info "Adresse MAC de cette machine : ${BOLD}${MAC}${NC} (à noter pour le réveil distant)"
+            log_warn "Vérifier aussi que le WoL est activé dans le BIOS (Wake on LAN / Power On by PCI-E)"
+            record "Wake-on-LAN" "OK (MAC: $MAC)"
+        else
+            log_err "Échec de la configuration Wake-on-LAN"
+            record "Wake-on-LAN" "FAIL"
+        fi
+    fi
+fi
+
+# ----------------------------------------------------------------------------
+# 8. Snapshot initial post-install
+# ----------------------------------------------------------------------------
+log_step "Création du snapshot initial (baseline post-install)"
+if sudo timeshift --create --comments "Baseline post-install" --tags D; then
+    log_ok "Snapshot baseline créé"
+    record "Snapshot baseline" "OK"
+else
+    log_err "Échec de la création du snapshot baseline"
+    record "Snapshot baseline" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# Rapport final
+# ----------------------------------------------------------------------------
+echo -e "\n${BOLD}==================== RÉCAPITULATIF ====================${NC}"
+printf "%-35s %s\n" "Étape" "Statut"
+printf "%-35s %s\n" "-----" "------"
+for step in \
+    "Mise à jour système" \
+    "yay" \
+    "Outils btrfs/snapshots" \
+    "grub-btrfsd" \
+    "Hook pacman" \
+    "Plymouth" \
+    "Paquets de base" \
+    "Wake-on-LAN" \
+    "Snapshot baseline"
+do
+    val="${STATUS[$step]:-NON EXÉCUTÉ}"
+    case "$val" in
+        OK*)   colored="${GREEN}${val}${NC}" ;;
+        FAIL*) colored="${RED}${val}${NC}" ;;
+        *)     colored="${YELLOW}${val}${NC}" ;;
+    esac
+    printf "%-35s %b\n" "$step" "$colored"
+done
+echo -e "${BOLD}=========================================================${NC}\n"
+
+log_info "Prochaines étapes manuelles éventuelles :"
+echo "  - Choisir un thème Plymouth : sudo plymouth-set-default-theme -l puis -R <theme>"
+echo "  - Vérifier le WoL dans le BIOS de la machine"
+echo "  - Noter la MAC affichée ci-dessus dans l'inventaire (WoL/Ansible)"
+echo "  - Vérifier les snapshots : sudo timeshift --list"
+
+log_ok "Script de post-installation terminé."

@@ -1,0 +1,98 @@
+# Liste des paquets installés par scripts/arch-install-post-install
+#
+# Format :
+#   [Catégorie]      → début d'une catégorie (installée séparément)
+#   paquet  # note   → un paquet par ligne, commentaire libre après #
+#   # paquet         → ligne commentée = paquet NON installé
+#
+# Paquets des dépôts officiels ET de l'AUR (installés via yay).
+
+[Base système]
+base-devel          # outils de compilation (requis pour l'AUR)
+pacman-contrib      # paccache, checkupdates, etc.
+reflector           # classement des miroirs
+openssh             # client/serveur SSH
+rsync               # synchro/copie de fichiers
+
+[Plasma]
+plasma              # groupe Plasma (le plus à jour et le plus intuitif)
+dolphin             # explorateur de fichiers
+ark                 # gestionnaire d'archives
+spectacle           # captures d'écran
+kcalc               # calculatrice
+partitionmanager    # gestion des partitions
+krdp                # serveur bureau à distance (RDP)
+
+[Shell/terminal]
+kitty                   # meilleur terminal
+# ghostty               # alternative à kitty
+zsh
+zsh-completions         # complétions supplémentaires
+zsh-autosuggestions     # suggestions basées sur l'historique
+zsh-syntax-highlighting # coloration des commandes
+fastfetch               # rice
+
+[Outils CLI]
+man-db              # pages de manuel (le paquet "man" n'existe pas)
+man-pages           # contenu des pages man
+tldr                # aide rapide aux commandes
+neovim              # éditeur (alias vim → nvim dans le .zshrc)
+yazi                # explorateur de fichiers (TUI)
+viu                 # voir images (TUI)
+fd                  # alternative à find
+libqalculate        # fournit qalc
+btop                # moniteur de ressources
+htop                # moniteur de ressources
+qdirstat            # analyse de l'espace disque
+
+[Réseau]
+curl
+wget
+bind                # dig, nslookup
+nmap                # scan réseau
+remmina             # client RDP/VNC/SSH graphique
+
+[Sécurité]
+gnupg
+
+[Archives]
+7zip
+unrar
+unzip
+
+[Développement]
+git
+python
+nodejs
+rustup
+docker
+docker-compose
+visual-studio-code-bin  # AUR
+
+[Internet]
+firefox                 # meilleur navigateur (ne me parlez même pas de Brave)
+firefox-ublock-origin   # uBlock
+chromium                # au cas où
+qbittorrent             # torrenting (PaS de PiRaTeS svp)
+# thunderbird           # client mail
+
+[Visualisation]
+gwenview            # images
+okular              # PDF et documents
+vlc                 # vidéos
+
+[Création]
+krita               # dessin / peinture
+gimp                # retouche photo
+inkscape            # vectoriel (affiches)
+blender             # modélisation 3D
+kdenlive            # montage vidéo
+obs-studio          # enregistrement / stream
+
+[Audio]
+pavucontrol         # mixeur audio
+playerctl           # contrôle des lecteurs médias
+# easyeffects       # effets/égaliseur
+
+[Bureautique]
+libreoffice-fresh

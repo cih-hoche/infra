@@ -1,14 +1,38 @@
 #!/usr/bin/env bash
 #
-# post-install.sh — Script de post-installation Arch Linux (PCs association)
+# arch-install-post-install — Post-installation Arch Linux (PCs du CIH)
 #
-# Automatise : yay, Timeshift + grub-btrfs, hook pacman, Plymouth,
-# paquets de base, Wake-on-LAN, snapshot initial.
+# Clone (ou met à jour) github.com/cih-hoche/infra dans /opt/cih-infra, puis :
+# comptes (root, admin, membre, asso, guest), yay, Timeshift + grub-btrfs,
+# Plymouth, paquets (packages.txt), services,
+# zsh + dotfiles pour tous les comptes, Wake-on-LAN, snapshot initial,
+# timeshift-autosnap.
 #
-# ! Usage : ./post-install.sh
-# ! À lancer avec un utilisateur ayant les droits sudo (PAS en root direct).
+# ! Usage (cf. guide "CIH reborn") :
+#     curl -o arch-install-post-install "https://raw.githubusercontent.com/cih-hoche/infra/refs/heads/main/installation_arch/scripts/arch-install-post-install" \
+#       && chmod +x arch-install-post-install && ./arch-install-post-install
+# ! À lancer avec le compte admin (sudo), PAS en root direct.
+# ! Relançable sans risque : chaque étape vérifie ce qui est déjà fait.
 
 set -uo pipefail
+
+# Surchargeables : CIH_BRANCH=dev ./arch-install-post-install
+REPO_URL="${CIH_REPO_URL:-https://github.com/cih-hoche/infra.git}"
+REPO_BRANCH="${CIH_BRANCH:-main}"
+INFRA_DIR="/opt/cih-infra"
+ARCH_DIR="$INFRA_DIR/installation_arch"
+PACKAGES_FILE="$ARCH_DIR/packages.txt"
+DOTFILES_DIR="$ARCH_DIR/dotfiles"
+DOTFILES=(.zshrc .zprofile)
+
+# Comptes à créer s'ils n'existent pas (root existe toujours, traité à part).
+# Format : "nom:sudo(oui/non):description"
+ACCOUNTS=(
+    "admin:oui:Administration, gestion des PCs"
+    "membre:non:Membres de l'association"
+    "asso:non:Compte partagé de l'association"
+    "guest:non:Personnes accompagnées"
+)
 
 # ----------------------------------------------------------------------------
 # Couleurs et helpers de log
@@ -20,21 +44,74 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-declare -A STATUS   # récapitulatif final : nom_étape -> OK/FAIL/SKIP
-
 log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_ok()      { echo -e "${GREEN}[ OK ]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_err()     { echo -e "${RED}[FAIL]${NC} $*"; }
 log_step()    { echo -e "\n${BOLD}==> $*${NC}"; }
 
-record() { STATUS["$1"]="$2"; }
+# Récapitulatif final : l'ordre d'affichage suit l'ordre d'exécution
+declare -A STATUS
+STEP_ORDER=()
+record() {
+    [[ -z "${STATUS[$1]+x}" ]] && STEP_ORDER+=("$1")
+    STATUS["$1"]="$2"
+}
+
+# Installe via yay (dépôts officiels + AUR), ou pacman si yay est absent
+pkg_install() {
+    if command -v yay &>/dev/null; then
+        yay -S --needed --noconfirm --answerdiff None --answerclean None "$@"
+    else
+        sudo pacman -S --needed --noconfirm "$@"
+    fi
+}
+
+# Installe une catégorie : un échec n'empêche pas les autres catégories
+install_group() {
+    local label=$1; shift
+    log_info "Catégorie : $label ($#)"
+    if pkg_install "$@"; then
+        log_ok "$label"
+        record "Paquets : $label" "OK"
+    else
+        log_err "$label — vérifier la sortie ci-dessus"
+        record "Paquets : $label" "FAIL"
+    fi
+}
+
+# Demande un mot de passe (saisie masquée + confirmation) et l'applique
+set_password() {   # $1 = compte
+    local name=$1 p1 p2
+    [[ -t 0 ]] || return 1          # pas de terminal : impossible de saisir
+    while true; do
+        read -rsp "  Mot de passe pour $name : " p1; echo
+        read -rsp "  Confirmer : " p2; echo
+        if [[ -z "$p1" ]]; then
+            log_warn "Mot de passe vide refusé"
+        elif [[ "$p1" != "$p2" ]]; then
+            log_warn "Les mots de passe ne correspondent pas"
+        else
+            break
+        fi
+    done
+    printf '%s:%s\n' "$name" "$p1" | sudo chpasswd
+}
+
+is_btrfs_root() { [[ "$(findmnt -no FSTYPE /)" == "btrfs" ]]; }
+uses_grub()     { [[ -f /boot/grub/grub.cfg ]]; }
+
+# Comptes humains : UID 1000–59999 avec un home existant (admin, user, guest…)
+human_users() {
+    getent passwd | awk -F: '$3 >= 1000 && $3 < 60000 {print $1":"$6}' \
+        | while IFS=: read -r name home; do [[ -d "$home" ]] && echo "$name:$home"; done
+}
 
 # ----------------------------------------------------------------------------
 # Vérifications préalables
 # ----------------------------------------------------------------------------
 if [[ $EUID -eq 0 ]]; then
-    log_err "Ne pas lancer ce script en root direct. Utilise un compte sudo (ex: admin)."
+    log_err "Ne pas lancer ce script en root direct. Utilise le compte admin."
     exit 1
 fi
 
@@ -46,6 +123,13 @@ fi
 ( while true; do sudo -n true; sleep 60; done ) 2>/dev/null &
 SUDO_KEEPALIVE_PID=$!
 trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null' EXIT
+
+# Ancien hook maison : remplacé par timeshift-autosnap (dernière étape).
+# Supprimé dès maintenant pour éviter un snapshot à chaque install du script.
+OLD_HOOK="/etc/pacman.d/hooks/timeshift-snapshot.hook"
+if [[ -f "$OLD_HOOK" ]]; then
+    sudo rm -f "$OLD_HOOK" && log_info "Ancien hook supprimé : $OLD_HOOK"
+fi
 
 # ----------------------------------------------------------------------------
 # 1. Mise à jour du système
@@ -60,88 +144,178 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 2. Installation de yay (AUR helper)
+# 2. Récupération du dépôt infra (bloquant : tout le reste en dépend)
+# ----------------------------------------------------------------------------
+log_step "Récupération du dépôt $REPO_URL ($REPO_BRANCH)"
+sudo pacman -S --needed --noconfirm git >/dev/null
+
+if [[ -d "$INFRA_DIR/.git" ]]; then
+    # Déjà cloné (relance du script) : on met à jour sans écraser de modif locale
+    if sudo git -C "$INFRA_DIR" fetch --quiet origin "$REPO_BRANCH" \
+        && sudo git -C "$INFRA_DIR" checkout --quiet "$REPO_BRANCH" \
+        && sudo git -C "$INFRA_DIR" pull --quiet --ff-only origin "$REPO_BRANCH"; then
+        log_ok "Dépôt mis à jour : $INFRA_DIR ($(git -C "$INFRA_DIR" rev-parse --short HEAD))"
+        record "Dépôt infra" "OK (mis à jour)"
+    else
+        log_warn "Mise à jour impossible (réseau ou modifs locales) — version locale utilisée"
+        record "Dépôt infra" "WARN (version locale)"
+    fi
+elif sudo git clone --quiet --branch "$REPO_BRANCH" "$REPO_URL" "$INFRA_DIR"; then
+    log_ok "Dépôt cloné : $INFRA_DIR ($(git -C "$INFRA_DIR" rev-parse --short HEAD))"
+    record "Dépôt infra" "OK"
+else
+    log_err "Impossible de cloner $REPO_URL — abandon (vérifier le réseau)."
+    exit 1
+fi
+
+if [[ ! -f "$PACKAGES_FILE" ]]; then
+    log_err "Fichier introuvable : $PACKAGES_FILE — abandon."
+    exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# 3. Comptes utilisateurs : root, admin, membre, asso, guest
+# ----------------------------------------------------------------------------
+# Fait en début de script : les mots de passe sont saisis tout de suite,
+# ensuite le reste tourne sans intervention.
+log_step "Comptes utilisateurs"
+[[ -t 0 ]] || log_warn "Pas de terminal interactif : les mots de passe ne pourront pas être saisis"
+
+# sudo pour le groupe wheel (fichier dédié, validé par visudo avant installation)
+SUDOERS_WHEEL=/etc/sudoers.d/10-wheel
+if ! sudo test -f "$SUDOERS_WHEEL"; then
+    tmp=$(mktemp)
+    echo '%wheel ALL=(ALL:ALL) ALL' > "$tmp"
+    if sudo visudo -cf "$tmp" >/dev/null; then
+        sudo install -m 440 -o root -g root "$tmp" "$SUDOERS_WHEEL" \
+            && log_ok "sudo activé pour le groupe wheel ($SUDOERS_WHEEL)"
+    else
+        log_err "Fichier sudoers invalide — non installé"
+    fi
+    rm -f "$tmp"
+fi
+
+# root : existe toujours, on vérifie seulement qu'il a un mot de passe
+case "$(sudo passwd -S root | awk '{print $2}')" in
+    P|PS)
+        log_ok "root : mot de passe déjà défini"
+        record "Compte root" "OK"
+        ;;
+    *)
+        log_warn "root n'a pas de mot de passe utilisable"
+        if set_password root; then
+            log_ok "root : mot de passe défini"
+            record "Compte root" "OK (mot de passe défini)"
+        else
+            record "Compte root" "WARN (verrouillé, sudo passwd root)"
+        fi
+        ;;
+esac
+
+acc_new=(); acc_old=(); acc_fail=()
+for entry in "${ACCOUNTS[@]}"; do
+    IFS=: read -r name is_sudo desc <<< "$entry"
+
+    if id "$name" &>/dev/null; then
+        acc_old+=("$name")
+    elif sudo useradd -m -U -c "$desc" "$name"; then
+        log_ok "Compte créé : $name ($desc)"
+        if set_password "$name"; then
+            acc_new+=("$name")
+        else
+            log_warn "$name créé sans mot de passe (connexion impossible) — sudo passwd $name"
+            acc_new+=("${name} (verrouillé)")
+        fi
+    else
+        log_err "Échec de la création de $name"
+        acc_fail+=("$name")
+        continue
+    fi
+
+    # Droits : wheel (sudo) pour "oui", retiré pour les autres
+    # (jamais retiré au compte qui exécute le script)
+    if [[ "$is_sudo" == "oui" ]]; then
+        sudo usermod -aG wheel "$name"
+    elif [[ "$name" != "$USER" ]] && id -nG "$name" | grep -qw wheel; then
+        sudo gpasswd -d "$name" wheel >/dev/null && log_warn "$name retiré du groupe wheel (pas de sudo)"
+    fi
+done
+
+# Ancien compte du guide : signalé, jamais modifié ni supprimé
+id user &>/dev/null && log_warn "Compte 'user' (ancien guide) présent — non modifié, à supprimer à la main si besoin"
+
+if (( ${#acc_fail[@]} )); then
+    record "Comptes" "FAIL (${acc_fail[*]})"
+else
+    record "Comptes" "OK (créés: ${acc_new[*]:-aucun} / existants: ${acc_old[*]:-aucun})"
+fi
+
+# ----------------------------------------------------------------------------
+# 4. Installation de yay (AUR helper)
 # ----------------------------------------------------------------------------
 log_step "Installation de yay"
 if command -v yay &>/dev/null; then
     log_ok "yay est déjà installé"
     record "yay" "OK (déjà présent)"
-else
-    if sudo pacman -S --needed --noconfirm git base-devel; then
-        tmpdir=$(mktemp -d)
-        if git clone https://aur.archlinux.org/yay.git "$tmpdir/yay" \
-            && (cd "$tmpdir/yay" && makepkg -si --noconfirm); then
-            log_ok "yay installé"
-            record "yay" "OK"
-        else
-            log_err "Échec de l'installation de yay"
-            record "yay" "FAIL"
-        fi
-        rm -rf "$tmpdir"
+elif sudo pacman -S --needed --noconfirm git base-devel; then
+    tmpdir=$(mktemp -d)
+    if git clone https://aur.archlinux.org/yay.git "$tmpdir/yay" \
+        && (cd "$tmpdir/yay" && makepkg -si --noconfirm); then
+        log_ok "yay installé"
+        record "yay" "OK"
     else
-        log_err "Échec de l'installation de git/base-devel"
+        log_err "Échec de l'installation de yay"
         record "yay" "FAIL"
+    fi
+    rm -rf "$tmpdir"
+else
+    log_err "Échec de l'installation de git/base-devel"
+    record "yay" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
+# 5. Snapshots : btrfs-progs, Timeshift, grub-btrfs
+# ----------------------------------------------------------------------------
+log_step "Installation des outils de snapshot"
+SNAP_PKGS=(btrfs-progs timeshift)
+uses_grub && SNAP_PKGS+=(grub-btrfs inotify-tools)
+
+if pkg_install "${SNAP_PKGS[@]}"; then
+    log_ok "Installés : ${SNAP_PKGS[*]}"
+    record "Outils snapshots" "OK"
+else
+    log_err "Échec de l'installation des outils de snapshot"
+    record "Outils snapshots" "FAIL"
+fi
+
+if ! uses_grub; then
+    log_warn "GRUB non détecté — grub-btrfs ignoré (snapshots non bootables)"
+    record "grub-btrfsd" "SKIP (pas de GRUB)"
+else
+    # Par défaut grub-btrfsd surveille /.snapshots (layout Snapper).
+    # Timeshift range ses snapshots ailleurs : il faut --timeshift-auto.
+    log_info "Configuration de grub-btrfsd pour Timeshift"
+    sudo mkdir -p /etc/systemd/system/grub-btrfsd.service.d
+    sudo tee /etc/systemd/system/grub-btrfsd.service.d/override.conf > /dev/null << 'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/grub-btrfsd --syslog --timeshift-auto
+EOF
+    if sudo systemctl daemon-reload && sudo systemctl enable --now grub-btrfsd; then
+        log_ok "grub-btrfsd activé (mode Timeshift)"
+        record "grub-btrfsd" "OK"
+    else
+        log_err "Échec de l'activation de grub-btrfsd"
+        record "grub-btrfsd" "FAIL"
     fi
 fi
 
 # ----------------------------------------------------------------------------
-# 3. btrfs-progs, Timeshift, grub-btrfs, inotify-tools
-# ----------------------------------------------------------------------------
-log_step "Installation des outils btrfs / snapshots"
-if sudo pacman -S --needed --noconfirm btrfs-progs timeshift \
-    && yay -S --needed --noconfirm grub-btrfs inotify-tools; then
-    log_ok "btrfs-progs, timeshift, grub-btrfs, inotify-tools installés"
-    record "Outils btrfs/snapshots" "OK"
-else
-    log_err "Échec de l'installation des outils btrfs/snapshots"
-    record "Outils btrfs/snapshots" "FAIL"
-fi
-
-log_info "Activation du service grub-btrfsd"
-if sudo systemctl enable --now grub-btrfsd; then
-    log_ok "grub-btrfsd activé"
-    record "grub-btrfsd" "OK"
-else
-    log_err "Échec de l'activation de grub-btrfsd"
-    record "grub-btrfsd" "FAIL"
-fi
-
-# ----------------------------------------------------------------------------
-# 4. Hook pacman : snapshot automatique avant chaque transaction
-# ----------------------------------------------------------------------------
-log_step "Mise en place du hook pacman (snapshot pré-transaction)"
-HOOK_DIR="/etc/pacman.d/hooks"
-HOOK_FILE="$HOOK_DIR/timeshift-snapshot.hook"
-
-sudo mkdir -p "$HOOK_DIR"
-if sudo tee "$HOOK_FILE" > /dev/null << 'EOF'
-[Trigger]
-Operation = Upgrade
-Operation = Install
-Operation = Remove
-Type = Package
-Target = *
-
-[Action]
-Description = Création d'un snapshot Timeshift avant modification des paquets...
-When = PreTransaction
-Exec = /usr/bin/timeshift --create --comments "Avant pacman -Syu" --tags D
-Depends = timeshift
-EOF
-then
-    log_ok "Hook pacman créé : $HOOK_FILE"
-    record "Hook pacman" "OK"
-else
-    log_err "Échec de la création du hook pacman"
-    record "Hook pacman" "FAIL"
-fi
-
-# ----------------------------------------------------------------------------
-# 5. Plymouth
+# 6. Plymouth
 # ----------------------------------------------------------------------------
 log_step "Installation de Plymouth"
-if sudo pacman -S --needed --noconfirm plymouth; then
-    log_ok "Plymouth installé (pense à choisir/activer un thème avec 'plymouth-set-default-theme')"
+if pkg_install plymouth; then
+    log_ok "Plymouth installé (thème à choisir avec 'plymouth-set-default-theme')"
     record "Plymouth" "OK (thème à configurer manuellement)"
 else
     log_err "Échec de l'installation de Plymouth"
@@ -149,30 +323,111 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# 6. Paquets de base
+# 7. Paquets (depuis packages.txt du dépôt)
 # ----------------------------------------------------------------------------
-log_step "Installation des logiciels de base"
-PACKAGES=(
-    tldr man timeshift git thunderbird blender ghostty dolphin nvim
-    visual-studio-code-bin libreoffice-fresh gwenview vlc okular krita
-    gimp inkscape chromium firefox firefox-ublock-origin krdp remmina
-    qbittorrent kdenlive obs-studio btop
-)
-if yay -S --needed --noconfirm "${PACKAGES[@]}"; then
-    log_ok "Tous les paquets de base sont installés"
-    record "Paquets de base" "OK"
+log_step "Installation des logiciels ($PACKAGES_FILE)"
+
+# Lecture complète du fichier AVANT d'installer : yay/pacman lisent stdin,
+# ils ne doivent pas consommer le fichier en cours de lecture.
+GROUP_NAMES=()
+GROUP_PKGS=()
+current=""
+while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"                                   # retire les commentaires
+    line="${line#"${line%%[![:space:]]*}"}"              # trim gauche
+    line="${line%"${line##*[![:space:]]}"}"              # trim droite
+    [[ -z "$line" ]] && continue
+    if [[ "$line" =~ ^\[(.+)\]$ ]]; then
+        GROUP_NAMES+=("${BASH_REMATCH[1]}")
+        GROUP_PKGS+=("")
+        current=$(( ${#GROUP_NAMES[@]} - 1 ))
+    else
+        if [[ -z "$current" ]]; then                     # paquets avant toute catégorie
+            GROUP_NAMES+=("Divers"); GROUP_PKGS+=(""); current=0
+        fi
+        GROUP_PKGS[current]+=" $line"
+    fi
+done < "$PACKAGES_FILE"
+
+for i in "${!GROUP_NAMES[@]}"; do
+    read -ra pkgs <<< "${GROUP_PKGS[i]}"
+    (( ${#pkgs[@]} )) && install_group "${GROUP_NAMES[i]}" "${pkgs[@]}"
+done
+
+# ----------------------------------------------------------------------------
+# 8. Services
+# ----------------------------------------------------------------------------
+log_step "Activation des services"
+
+# Docker : seul le compte admin est ajouté au groupe (docker = équivalent root)
+if sudo systemctl enable --now docker && sudo usermod -aG docker "$USER"; then
+    log_ok "Docker activé, $USER ajouté au groupe docker"
+    record "Docker" "OK (reconnexion requise)"
 else
-    log_warn "Certains paquets ont pu échouer, vérifier la sortie ci-dessus"
-    record "Paquets de base" "PARTIEL/FAIL"
+    log_err "Échec de la configuration de Docker"
+    record "Docker" "FAIL"
+fi
+
+# Vide automatiquement le cache pacman chaque semaine (garde 3 versions)
+if sudo systemctl enable --now paccache.timer; then
+    log_ok "paccache.timer activé"
+    record "paccache.timer" "OK"
+else
+    log_err "Échec de l'activation de paccache.timer"
+    record "paccache.timer" "FAIL"
 fi
 
 # ----------------------------------------------------------------------------
-# 7. Wake-on-LAN
+# 9. zsh + dotfiles pour tous les comptes (+ /etc/skel pour les futurs)
+# ----------------------------------------------------------------------------
+log_step "Configuration du shell pour tous les comptes"
+
+deploy_dotfiles() {   # $1 = dossier cible, $2 = propriétaire (user[:group])
+    local dest=$1 owner=$2 f src
+    for f in "${DOTFILES[@]}"; do
+        src="$DOTFILES_DIR/$f"
+        [[ -f "$src" ]] || continue
+        # Sauvegarde l'existant s'il diffère
+        if sudo test -f "$dest/$f" && ! sudo cmp -s "$src" "$dest/$f"; then
+            sudo cp -p "$dest/$f" "$dest/$f.bak.$(date +%Y%m%d-%H%M%S)"
+        fi
+        sudo install -m 644 -o "${owner%%:*}" -g "${owner##*:}" "$src" "$dest/$f" || return 1
+    done
+}
+
+if [[ ! -d "$DOTFILES_DIR" ]]; then
+    log_warn "Pas de dossier $DOTFILES_DIR dans le dépôt — dotfiles non déployés"
+    record "Dotfiles" "SKIP (absent du dépôt)"
+else
+    deploy_dotfiles /etc/skel root:root && log_ok "Dotfiles copiés dans /etc/skel"
+fi
+
+shell_ok=(); shell_fail=()
+while IFS=: read -r name home; do
+    group=$(id -gn "$name")
+    [[ -d "$DOTFILES_DIR" ]] && ! deploy_dotfiles "$home" "$name:$group" && shell_fail+=("$name") && continue
+    if [[ "$(getent passwd "$name" | cut -d: -f7)" != "/usr/bin/zsh" ]] \
+        && ! sudo chsh -s /usr/bin/zsh "$name" >/dev/null; then
+        shell_fail+=("$name"); continue
+    fi
+    shell_ok+=("$name")
+done < <(human_users)
+
+if (( ${#shell_fail[@]} )); then
+    log_err "Échec pour : ${shell_fail[*]}"
+    record "zsh + dotfiles" "FAIL (${shell_fail[*]})"
+else
+    log_ok "zsh + dotfiles configurés pour : ${shell_ok[*]:-aucun compte}"
+    record "zsh + dotfiles" "OK (${shell_ok[*]:-aucun compte})"
+fi
+
+# ----------------------------------------------------------------------------
+# 10. Wake-on-LAN
 # ----------------------------------------------------------------------------
 log_step "Configuration du Wake-on-LAN"
-sudo pacman -S --needed --noconfirm ethtool wakeonlan >/dev/null 2>&1
+pkg_install ethtool wakeonlan >/dev/null 2>&1
 
-# Détection de l'interface ethernet active
+# Détection de l'interface ethernet
 IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^en|^eth' | head -n1)
 
 if [[ -z "$IFACE" ]]; then
@@ -188,25 +443,28 @@ else
     if [[ -z "$CONN_NAME" ]]; then
         log_warn "Impossible de trouver la connexion NetworkManager pour $IFACE — WoL non configuré."
         record "Wake-on-LAN" "SKIP (connexion NM introuvable)"
+    elif sudo nmcli connection modify "$CONN_NAME" 802-3-ethernet.wake-on-lan magic; then
+        MAC=$(ip link show "$IFACE" | awk '/ether/ {print $2}')
+        log_ok "Wake-on-LAN (magic packet) activé sur '$CONN_NAME' ($IFACE)"
+        log_info "Adresse MAC de cette machine : ${BOLD}${MAC}${NC} (à noter pour le réveil distant)"
+        log_warn "Vérifier aussi que le WoL est activé dans le BIOS (Wake on LAN / Power On by PCI-E)"
+        record "Wake-on-LAN" "OK (MAC: $MAC)"
     else
-        if sudo nmcli connection modify "$CONN_NAME" 802-3-ethernet.wake-on-lan magic; then
-            log_ok "Wake-on-LAN (magic packet) activé sur '$CONN_NAME' ($IFACE)"
-            MAC=$(ip link show "$IFACE" | awk '/ether/ {print $2}')
-            log_info "Adresse MAC de cette machine : ${BOLD}${MAC}${NC} (à noter pour le réveil distant)"
-            log_warn "Vérifier aussi que le WoL est activé dans le BIOS (Wake on LAN / Power On by PCI-E)"
-            record "Wake-on-LAN" "OK (MAC: $MAC)"
-        else
-            log_err "Échec de la configuration Wake-on-LAN"
-            record "Wake-on-LAN" "FAIL"
-        fi
+        log_err "Échec de la configuration Wake-on-LAN"
+        record "Wake-on-LAN" "FAIL"
     fi
 fi
 
 # ----------------------------------------------------------------------------
-# 8. Snapshot initial post-install
+# 11. Snapshot initial post-install
 # ----------------------------------------------------------------------------
 log_step "Création du snapshot initial (baseline post-install)"
-if sudo timeshift --create --comments "Baseline post-install" --tags D; then
+if ! is_btrfs_root; then
+    log_warn "La racine n'est pas en btrfs — snapshot baseline ignoré"
+    record "Snapshot baseline" "SKIP (pas de btrfs)"
+# --btrfs force le mode btrfs (sinon Timeshift démarre en mode rsync).
+# Pas de --tags : snapshot "à la demande", jamais supprimé automatiquement.
+elif sudo timeshift --btrfs --create --comments "Baseline post-install ($(git -C "$INFRA_DIR" rev-parse --short HEAD))"; then
     log_ok "Snapshot baseline créé"
     record "Snapshot baseline" "OK"
 else
@@ -215,23 +473,37 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 12. timeshift-autosnap : snapshot avant chaque transaction pacman
+# ----------------------------------------------------------------------------
+# Installé en dernier pour ne pas créer un snapshot à chaque étape du script.
+# Remplace l'ancien hook maison : garde seulement les N derniers snapshots
+# (l'ancien hook les accumulait sans limite).
+log_step "Snapshots automatiques avant mise à jour"
+if ! is_btrfs_root; then
+    log_warn "Racine non btrfs — timeshift-autosnap ignoré"
+    record "timeshift-autosnap" "SKIP (pas de btrfs)"
+elif pkg_install timeshift-autosnap; then
+    CONF="/etc/timeshift-autosnap.conf"
+    sudo sed -i 's/^maxSnapshots=.*/maxSnapshots=3/' "$CONF"
+    # grub-btrfsd met déjà le menu GRUB à jour : inutile de relancer grub-mkconfig
+    if uses_grub; then
+        sudo sed -i 's/^updateGrub=.*/updateGrub=false/' "$CONF"
+    fi
+    log_ok "timeshift-autosnap installé (3 snapshots conservés)"
+    record "timeshift-autosnap" "OK"
+else
+    log_err "Échec de l'installation de timeshift-autosnap"
+    record "timeshift-autosnap" "FAIL"
+fi
+
+# ----------------------------------------------------------------------------
 # Rapport final
 # ----------------------------------------------------------------------------
 echo -e "\n${BOLD}==================== RÉCAPITULATIF ====================${NC}"
 printf "%-35s %s\n" "Étape" "Statut"
 printf "%-35s %s\n" "-----" "------"
-for step in \
-    "Mise à jour système" \
-    "yay" \
-    "Outils btrfs/snapshots" \
-    "grub-btrfsd" \
-    "Hook pacman" \
-    "Plymouth" \
-    "Paquets de base" \
-    "Wake-on-LAN" \
-    "Snapshot baseline"
-do
-    val="${STATUS[$step]:-NON EXÉCUTÉ}"
+for step in "${STEP_ORDER[@]}"; do
+    val="${STATUS[$step]}"
     case "$val" in
         OK*)   colored="${GREEN}${val}${NC}" ;;
         FAIL*) colored="${RED}${val}${NC}" ;;
@@ -242,9 +514,12 @@ done
 echo -e "${BOLD}=========================================================${NC}\n"
 
 log_info "Prochaines étapes manuelles éventuelles :"
+echo "  - Redémarrer (shell zsh + groupe docker)"
+echo "  - Comptes créés sans mot de passe : sudo passwd <compte>"
 echo "  - Choisir un thème Plymouth : sudo plymouth-set-default-theme -l puis -R <theme>"
 echo "  - Vérifier le WoL dans le BIOS de la machine"
 echo "  - Noter la MAC affichée ci-dessus dans l'inventaire (WoL/Ansible)"
 echo "  - Vérifier les snapshots : sudo timeshift --list"
+echo "  - Relancer plus tard pour appliquer les changements du dépôt : $INFRA_DIR/installation_arch/scripts/arch-install-post-install"
 
 log_ok "Script de post-installation terminé."

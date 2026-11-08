@@ -1,0 +1,31 @@
+{
+    "archinstall-language": "English",
+    "locale_config": {
+        "kb_layout": "fr",
+        "sys_lang": "fr_FR",
+        "sys_enc": "UTF-8"
+    },
+    "bootloader_config": {
+        "bootloader": "Grub",
+        "uki": false,
+        "removable": true
+    },
+    "kernels": ["linux-lts"],
+    "profile_config": {
+        "profile": {
+            "main": "Desktop",
+            "details": ["KDE Plasma"]
+        },
+        "greeter": "sddm",
+        "gfx_driver": "All open-source"
+    },
+    "app_config": {
+        "audio_config": {"audio": "pipewire"}
+    },
+    "network_config": {"type": "nm"},
+    "packages": ["git", "base-devel", "neovim", "konsole"],
+    "hostname": "archlinux-cih-000",
+    "timezone": "Europe/Paris",
+    "ntp": true,
+    "swap": {"enabled": true, "algorithm": "zstd"}
+}

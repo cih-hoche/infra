@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# cih-install — installeur des PCs du CIH (ISO live CIH)
+#
+# Lance archinstall pré-rempli avec la config du guide (fr, btrfs, GRUB,
+# linux-lts, KDE Plasma + SDDM, pipewire, NetworkManager, Europe/Paris).
+# Restent à choisir dans le menu : disque/partitionnement, hostname, comptes.
+# Au premier login du compte admin, arch-install-post-install est lancé
+# automatiquement (voir /root/cih/firstboot-setup.sh).
+
+set -euo pipefail
+
+CIH_DIR=/root/cih
+BASE_CONFIG="$CIH_DIR/user_configuration.json"
+FIRSTBOOT="$CIH_DIR/firstboot-setup.sh"
+CONFIG=/tmp/cih-user_configuration.json
+
+BOLD='\033[1m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; NC='\033[0m'
+
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}À lancer en root (session live).${NC}"
+    exit 1
+fi
+
+# Réseau obligatoire (paquets téléchargés pendant l'installation)
+echo "Vérification de la connexion Internet… (quelques secondes juste après le boot)"
+until ping -c1 -W3 archlinux.org > /dev/null 2>&1; do
+    echo -e "${YELLOW}Pas d'accès à Internet.${NC}"
+    echo "  Ethernet : brancher le câble (DHCP automatique)"
+    echo "  Wi-Fi    : iwctl  puis  station wlan0 connect <SSID>"
+    read -rp "Entrée pour réessayer (Ctrl+C pour quitter)… "
+done
+timedatectl set-ntp true
+
+# Config finale = config de base + firstboot-setup.sh en custom_commands
+python3 - "$BASE_CONFIG" "$FIRSTBOOT" "$CONFIG" << 'EOF'
+import json, sys
+base, firstboot, out = sys.argv[1:]
+with open(base) as f:
+    cfg = json.load(f)
+with open(firstboot) as f:
+    cfg["custom_commands"] = [f.read()]
+with open(out, "w") as f:
+    json.dump(cfg, f, indent=4)
+EOF
+
+echo -e "
+${BOLD}Installation CIH — archinstall va s'ouvrir, pré-rempli.${NC}
+À renseigner/vérifier dans le menu :
+  - ${BOLD}Disk configuration${NC} : disque du PC, partitionnement btrfs
+    (garder les sous-volumes @ et @home pour Timeshift), pas de chiffrement
+  - ${BOLD}Hostname${NC}           : étiquette du PC (ex : archlinux-cih-001)
+  - ${BOLD}Authentication${NC}     : mot de passe root + compte ${BOLD}admin${NC} avec sudo
+  - Mirrors                     : France, Worldwide (optionnel)
+Puis ${BOLD}Install${NC}. En fin d'installation : Reboot, retirer la clé USB.
+"
+read -rp "Entrée pour lancer archinstall… "
+
+exec archinstall --config "$CONFIG"

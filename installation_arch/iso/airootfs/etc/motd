@@ -1,0 +1,8 @@
+
+ISO d'installation CIH (Arch Linux)
+
+  1. Réseau : Ethernet automatique, Wi-Fi via iwctl
+  2. Lancer l'installeur :  cih-install
+
+Guide : https://github.com/cih-hoche/infra/blob/main/installation_arch/iso/INSTALLATION.md
+

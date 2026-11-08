@@ -1,0 +1,60 @@
+name: Build ISO
+
+on:
+  workflow_dispatch:            # bouton "Run workflow" dans l'onglet Actions
+  push:
+    branches: [main]
+    paths:
+      - "installation_arch/iso/**"
+      - ".github/workflows/build-iso.yml"
+    tags: ["iso-*"]             # git tag iso-2026.11 && git push --tags → release
+  pull_request:
+    paths:
+      - "installation_arch/iso/**"
+      - ".github/workflows/build-iso.yml"
+  schedule:
+    - cron: "0 4 1 * *"         # le 1er de chaque mois : noyau live + archinstall à jour
+
+permissions:
+  contents: write               # nécessaire pour créer la release (tags iso-*)
+
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # mkarchiso a besoin d'Arch (pacstrap) et de droits root pour les montages
+      - name: Build ISO (archlinux container)
+        run: |
+          docker run --rm --privileged \
+            -v "$PWD":/repo -w /repo/installation_arch/iso \
+            archlinux:latest bash -euo pipefail -c '
+              pacman -Syu --noconfirm --needed archiso
+              ./build.sh /repo/out
+            '
+          sudo chown -R "$(id -u):$(id -g)" out
+          cd out && sha256sum *.iso > SHA256SUMS && ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cih-archlinux-iso
+          path: |
+            out/*.iso
+            out/SHA256SUMS
+          retention-days: 14
+          compression-level: 0  # ISO déjà compressée
+
+      - name: Release (tags iso-*)
+        if: startsWith(github.ref, 'refs/tags/iso-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.iso
+            out/SHA256SUMS

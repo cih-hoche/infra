@@ -1,2 +1,6 @@
 # Les fichiers temporaires de LibreOffice
 .~lock.*.odt#
+# Build de l'ISO (archiso)
+installation_arch/iso/work/
+installation_arch/iso/out/
+*.iso

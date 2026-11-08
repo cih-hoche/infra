@@ -7,7 +7,7 @@ on:
     paths:
       - "installation_arch/iso/**"
       - ".github/workflows/build-iso.yml"
-    tags: ["iso-*"]             # git tag iso-2026.11 && git push --tags → release
+    tags: ["iso-*", "!iso-latest"]  # git tag iso-2026.11 && git push --tags → release
   pull_request:
     paths:
       - "installation_arch/iso/**"
@@ -50,6 +50,23 @@ jobs:
             out/SHA256SUMS
           retention-days: 14
           compression-level: 0  # ISO déjà compressée
+
+      # Release "iso-latest" : remplacée à chaque build de main (lien fixe)
+      - name: Release iso-latest (main)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release delete iso-latest --repo "$REPO" --cleanup-tag --yes || true
+          gh release create iso-latest out/*.iso out/SHA256SUMS \
+            --repo "$REPO" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "ISO CIH — dernière version (main)" \
+            --notes "Construite automatiquement depuis main ($GITHUB_SHA), le $(date -u +%Y-%m-%d).
+          Remplacée à chaque build : pour une version figée, utiliser une release iso-AAAA.MM.
+          Installation : installation_arch/iso/INSTALLATION.md"
 
       - name: Release (tags iso-*)
         if: startsWith(github.ref, 'refs/tags/iso-')

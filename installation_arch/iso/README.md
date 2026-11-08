@@ -65,8 +65,11 @@ Workflow [`build-iso.yml`](../../.github/workflows/build-iso.yml). Il se lance :
 - à chaque push sur `main` qui modifie `installation_arch/iso/` (et sur les PR) ;
 - le 1er de chaque mois (ISO à jour).
 
-L'ISO et son `SHA256SUMS` sont téléchargeables en bas de la page du run (**Artifacts**,
-gardés 14 jours, zip à extraire). Pour une version durable, créer une release :
+Dernière ISO construite depuis `main` (lien fixe, remplacée à chaque build) :
+<https://github.com/cih-hoche/infra/releases/tag/iso-latest>
+
+Chaque run garde aussi l'ISO et son `SHA256SUMS` en bas de sa page (**Artifacts**,
+14 jours, zip à extraire). Pour une version figée, créer une release :
 
 ```bash
 git tag iso-2026.11 && git push origin iso-2026.11

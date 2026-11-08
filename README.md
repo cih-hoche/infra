@@ -13,7 +13,6 @@ Tout est dans [`installation_arch/`](installation_arch/) :
 | [`scripts/arch-install-post-install`](installation_arch/scripts/arch-install-post-install) | Post-installation : comptes, yay, Timeshift + grub-btrfs, Plymouth, paquets, zsh, Wake-on-LAN, snapshots |
 | [`packages.txt`](installation_arch/packages.txt) | Logiciels installés par le post-install (par catégorie) |
 | [`dotfiles/`](installation_arch/dotfiles/) | `.zshrc` / `.zprofile` déployés pour tous les comptes |
-| `guide_installation.odt` | Guide d'installation manuel (sans l'ISO CIH) + dépannage |
 
 Démarrage rapide :
 

@@ -82,5 +82,4 @@ applique aussi les nouveautés du dépôt (paquets, dotfiles).
 - Thème Plymouth (optionnel) : `sudo plymouth-set-default-theme -l`, puis `sudo plymouth-set-default-theme -R <thème>`
 - Vérifier les snapshots : `sudo timeshift --list` (un snapshot « Baseline post-install » doit exister)
 
-En cas de problème (le PC ne démarre plus, etc.) : voir la section dépannage du guide
-d'installation (`guide_installation.odt`), ou demander sur le Discord de l'association.
+En cas de problème (le PC ne démarre plus, etc.) : demander sur le Discord de l'association.

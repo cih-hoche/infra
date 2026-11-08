@@ -8,7 +8,7 @@
 # zsh + dotfiles pour tous les comptes, Wake-on-LAN, snapshot initial,
 # timeshift-autosnap.
 #
-# ! Usage (cf. guide "CIH reborn") :
+# ! Usage manuel (normalement lancé automatiquement par l'ISO CIH, cf. iso/INSTALLATION.md) :
 #     curl -o arch-install-post-install "https://raw.githubusercontent.com/cih-hoche/infra/refs/heads/main/installation_arch/scripts/arch-install-post-install" \
 #       && chmod +x arch-install-post-install && ./arch-install-post-install
 # ! À lancer avec le compte admin (sudo), PAS en root direct.
